@@ -24,58 +24,49 @@ def _buscar_parrafos_relevantes(texto_total: str, pregunta: str, min_len: int = 
     return [p for _, p in relevantes[:5]]
 
 
-# ---------- Lógica específica para porcentajes ---------- #
+# ---------- Detección consultas específicas ---------- #
 
 def _es_pregunta_porcentaje_caja_ahorro_pesos(pregunta: str) -> bool:
     q = _normalizar(pregunta)
-    tiene_porcentaje = any(g in q for g in ["porcentaje", "%", "alicuota", "alícuota", "tasa", "exigencia"])
-    tiene_caja_ahorro_pesos = ("caja" in q or "cajas" in q) and "ahorro" in q and "peso" in q
-    return tiene_porcentaje and tiene_caja_ahorro_pesos
+    tiene_trigger = any(t in q for t in ["porcentaje", "%", "alicuota", "alícuota", "tasa", "exigencia"])
+    tiene_concepto = ("caja" in q or "cajas" in q) and "ahorro" in q and "peso" in q
+    return tiene_trigger and tiene_concepto
 
 
-def _buscar_porcentaje_caja_ahorro_pesos(texto_total: str):
+def _buscar_porcentaje_caja_ahorro_pesos(texto_total: str) -> str | None:
     """
-    Intenta ubicar el porcentaje de exigencia para cajas de ahorro en pesos
-    buscando líneas o fragmentos donde aparezca el concepto y un número con '%'.
-    Está pensado para texto proveniente de tablas o cuadros del régimen.
+    Identifica la alícuota para depósitos en caja de ahorro en pesos (1.3.2.1. En pesos.)
+    usando el formato típico:
+
+    1.3.2.1. En pesos.                         45       20
+
+    Se toma el primer número de esa línea como alícuota aplicable al Grupo A / G-SIB.
+    No se inventan valores: si no se encuentra el patrón, se devuelve None.
     """
 
-    # Trabajamos por líneas para respetar cómo suelen bajar las tablas
     lineas = [l.strip() for l in texto_total.split("\n") if l.strip()]
 
-    candidatos = []
-    for i, linea in enumerate(lineas):
+    for linea in lineas:
         ln = linea.lower()
+        if "1.3.2.1." in ln and "en pesos" in ln:
+            # Buscar todos los números en la misma línea
+            nums = re.findall(r"\d+(?:[.,]\d+)?", linea)
+            if nums:
+                # Primer número = Grupo A / G-SIB
+                return nums[0].replace(",", ".")
+            # Si no hay números en la misma línea, no forzamos desde otra
+            return None
 
-        # Buscamos menciones al concepto
-        if ("caja" in ln or "cajas" in ln) and "ahorro" in ln and "peso" in ln:
-            # Buscamos porcentaje en la misma línea
-            m = re.search(r"(\d+(?:[.,]\d+)?)\s*%", linea)
-            if m:
-                candidatos.append((i, m.group(1)))
-                continue
+    return None
 
-            # Si no está en la misma, miramos 1-2 líneas siguientes (típico en tablas PDF)
-            for j in range(1, 3):
-                if i + j < len(lineas):
-                    m2 = re.search(r"(\d+(?:[.,]\d+)?)\s*%", lineas[i + j])
-                    if m2:
-                        candidatos.append((i + j, m2.group(1)))
-                        break
 
-    if not candidatos:
-        return None
-
-    # Si hay varios candidatos, tomamos el primero (podés refinar si hiciera falta)
-    _, porcentaje = sorted(candidatos, key=lambda x: x[0])[0]
-    return porcentaje.replace(",", ".")
-
+# ---------- Lógica principal ---------- #
 
 def buscar_respuesta(texto_total: str, pregunta: str) -> str:
     """
-    Devuelve un texto de respuesta basado exclusivamente en texto_total.
+    Devuelve un texto normativo basado exclusivamente en texto_total.
     - Caso específico: porcentaje de exigencia para cajas de ahorro en pesos.
-    - Caso general: devuelve párrafos relevantes como base para que el GPT los sintetice.
+    - Caso general: devuelve párrafos relevantes como base para la respuesta.
     """
     if not texto_total.strip():
         return ""
@@ -86,23 +77,27 @@ def buscar_respuesta(texto_total: str, pregunta: str) -> str:
 
         if porcentaje:
             return (
-                f"La normativa vigente establece una exigencia de efectivo mínimo para las "
-                f"cajas de ahorro en pesos equivalente al {porcentaje}% sobre los saldos "
-                f"alcanzados, conforme al cuadro de alícuotas del régimen de efectivo mínimo. "
-                f"Este valor surge del texto normativo consolidado disponible."
+                "La normativa vigente establece una exigencia de efectivo mínimo para los "
+                "depósitos en caja de ahorros en pesos comprendidos en el punto 1.3.2.1 "
+                f"equivalente al {porcentaje}% sobre los saldos alcanzados del Grupo A/G-SIB, "
+                "conforme al cuadro de alícuotas previsto en el texto ordenado de efectivo mínimo."
             )
         else:
             return (
                 "Con la información normativa disponible en el texto cargado no se pudo "
-                "identificar de forma explícita un porcentaje de exigencia aplicable a las "
-                "cajas de ahorro en pesos. La determinación debe verificarse directamente "
-                "en el cuadro de alícuotas vigente del régimen de efectivo mínimo."
+                "identificar de forma explícita una alícuota aplicable a las cajas de ahorro "
+                "en pesos. La determinación debe verificarse directamente en el cuadro de "
+                "alícuotas vigente del régimen de efectivo mínimo."
             )
 
     # 2) Caso general: búsqueda de párrafos relevantes
     parrafos = _buscar_parrafos_relevantes(texto_total, pregunta)
 
     if not parrafos:
-        return ""
+        return (
+            "Con la información normativa disponible no es posible brindar una respuesta "
+            "explícita a esta consulta. La determinación debe efectuarse directamente sobre "
+            "el texto vigente."
+        )
 
     return "\n\n".join(parrafos)
